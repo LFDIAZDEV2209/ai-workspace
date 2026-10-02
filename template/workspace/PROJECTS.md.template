@@ -1,0 +1,25 @@
+# {{WORKSPACE_NAME}} — Mapa de Proyectos (canónico)
+
+| Repo | Qué es | Puerto(s) | Stack | Comando build/test |
+|---|---|---|---|---|
+| (rellenar) | | | | |
+
+## Gateway / routing (si aplica)
+
+| Ruta | Servicio |
+|---|---|
+| | |
+
+## Infraestructura compartida
+
+- (rellenar: BD, cache, colas, cloud)
+
+## Schemas BD (aislamiento por módulo)
+
+- (rellenar)
+
+## Reglas operativas que no se negocian
+
+1. Servidores dev siempre en background.
+2. Comentarios y documentación en el idioma del proyecto.
+3. Sin secretos en código.

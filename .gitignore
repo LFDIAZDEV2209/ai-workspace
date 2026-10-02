@@ -1,0 +1,5 @@
+node_modules/
+.ai/memory/memory.db*
+.ai/sessions/
+.DS_Store
+Thumbs.db

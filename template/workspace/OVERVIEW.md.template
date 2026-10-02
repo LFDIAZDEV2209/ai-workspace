@@ -1,0 +1,19 @@
+# {{WORKSPACE_NAME}} — Estado del Workspace (canónico)
+
+> Única fuente de estado activo. Actualizado: {{FECHA}}.
+> Historial completo: `.ai/archive/` (cuando exista).
+> Toda conclusión de sesión actualiza ESTE fichero, no crea nuevos.
+
+## Estado por módulo (con evidencia)
+
+| Módulo | Estado | Evidencia |
+|---|---|---|
+| (rellenar: módulo) | ✅/🔄/⛔ | (commit / test / endpoint) |
+
+## Riesgos activos / P0
+
+- (rellenar)
+
+## Constraints duras que NO romper
+
+- (rellenar)

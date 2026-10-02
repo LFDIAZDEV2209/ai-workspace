@@ -1,0 +1,8 @@
+# Router — Tarea → Repos involucrados
+
+> **Única fuente de verdad del routing.** El Context Broker parsea ESTA tabla (regex → repos CSV).
+> No dupliques reglas en código. Usa `\b` en palabras cortas con riesgo de substring.
+
+| Keyword (regex) | Repos |
+|---|---|
+| (rellenar) | |

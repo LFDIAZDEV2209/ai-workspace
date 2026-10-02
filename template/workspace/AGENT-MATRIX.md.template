@@ -1,0 +1,19 @@
+# Matrix de agentes — qué agente/modelo para qué tarea
+
+## Agentes disponibles (rellenar según entorno)
+
+| Agente | Dónde | Fortaleza | Cuota/coste | Cuándo usar |
+|---|---|---|---|---|
+| OpenCode | CLI / Herdr pane | implementación, exploración codegraph | según provider | Ejecutor principal |
+| Codex | Herdr pane | planificación relevo, review, computer-use | OpenAI | Planner relevo; reviewer |
+| agy | Herdr pane | planificación compleja, auditorías | premium | Planes; NO implementar |
+
+## Reglas de selección
+
+1. Implementación de código real → ejecutor económico.
+2. Arquitectura/specs → agy o Codex; nunca implementar y planificar a la vez en el mismo change.
+3. Revisión visual UI → revisor visual SIEMPRE antes de dar por terminada una pantalla.
+4. Exploración masiva → codegraph / subagentes internos, no grep manual.
+5. Dificultad alta (multi-repo, contratos, migrations) → plan primero, ejecutar después.
+6. Tareas triviales → directo sin OpenSpec (exención SDD).
+7. Cuota agotada → relevo al planner secundario.
