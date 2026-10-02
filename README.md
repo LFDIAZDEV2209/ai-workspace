@@ -60,10 +60,11 @@ y ejecuta exactamente lo que indica.
 
 ```bash
 # Flags
-npx github:LFDIAZDEV2209/ai-workspace            # OpenCode + scaffold
+npx github:LFDIAZDEV2209/ai-workspace            # OpenCode + scaffold + seed global
 npx github:LFDIAZDEV2209/ai-workspace --codex    # + Codex (config.toml)
 npx github:LFDIAZDEV2209/ai-workspace --agy      # + agy (Antigravity CLI)
-npx github:LFDIAZDEV2209/ai-workspace --no-mcp   # solo scaffold de .ai/
+npx github:LFDIAZDEV2209/ai-workspace --no-mcp   # solo scaffold de .ai/ (sin registro ni seed)
+npx github:LFDIAZDEV2209/ai-workspace --no-seed  # registra MCP pero sin lecciones semilla
 ```
 
 ## 📦 Los 4 casos de uso
@@ -93,8 +94,11 @@ npx github:LFDIAZDEV2209/ai-workspace --no-mcp   # solo scaffold de .ai/
 - **Aprendizaje entre proyectos**: una lesson/decisión con `scope: GLOBAL` se escribe en el
   store global de la máquina y aparece marcada `[global]` en las búsquedas de cualquier
   otro proyecto de ese PC — el agente del repo B aprende lo que el agente del repo A
-  documentó. Demo real: una lesson nacida en un workspace fue encontrada por el broker
-  de otro proyecto en otra ruta con su memoria local vacía.
+  documentó. La primera instalación **siembra 5 lecciones universales** (MCP stdio,
+  reconexión, encoding Windows, WAL multi-agente, servidores en background): tus agentes
+  nacen con conocimiento probado y lo acumulan con tu trabajo. Demo real: una lesson
+  nacida en un workspace fue encontrada por el broker de otro proyecto en otra ruta
+  con su memoria local vacía.
 - **Cierre de sesión**: `node .ai/scripts/session-close.mjs` registra el handoff y emite el checklist
   (OVERVIEW, OPEN-ITEMS, índices, commits).
 - **Higiene continua**: `doc-health` detecta docs de sesión sueltas, canónicos >12 KB, stale >45 días,

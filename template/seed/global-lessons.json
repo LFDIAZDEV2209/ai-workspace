@@ -1,0 +1,32 @@
+[
+  {
+    "title": "MCP stdio exige envelope JSON-RPC 2.0 en cada frame",
+    "body": "Aplicable a CUALQUIER proyecto con MCP stdio: cada frame de respuesta debe llevar jsonrpc:\"2.0\" explícito ({jsonrpc, id, result}). Sin el envelope, el cliente MCP valida con Zod, descarta el frame y el initialize muere en 'Request timed out' (~30s).",
+    "source": "ai-workspace starter pack (incidente real en producción)",
+    "tags": "mcp,jsonrpc"
+  },
+  {
+    "title": "MCP failed no se reconecta solo: reconexión vía API o reinicio",
+    "body": "OpenCode no reintenta conexiones MCP fallidas dentro del mismo run del servicio. Tras arreglar un server: POST /api/experimental/mcp/{server}/connect?location[directory]=<ruta-url-encoded> (o GET /api/mcp?... para ver estado), o 'opencode service restart' / sesión nueva.",
+    "source": "ai-workspace starter pack (incidente real en producción)",
+    "tags": "mcp,opencode"
+  },
+  {
+    "title": "Windows: UTF-8 sin BOM + PowerShell 5.1 = mojibake",
+    "body": "PS 5.1 lee UTF-8-sin-BOM como ANSI (acentos rotos al display) y Set-Content/Out-File sin -Encoding utf8 escriben ANSI/UTF-16 (CORROMPEN). Regla: ficheros UTF-8 sin BOM (ps1 con BOM), nunca escribir docs con redirecciones de PS, verificar con la herramienta de lectura del agente.",
+    "source": "ai-workspace starter pack (incidente real en producción)",
+    "tags": "windows,encoding"
+  },
+  {
+    "title": "SQLite multi-agente: WAL + busy_timeout",
+    "body": "Varios agentes abriendo el mismo SQLite (panes en paralelo): abrir con PRAGMA journal_mode=WAL + busy_timeout=3000. Lecturas concurrentes OK; escrituras simultáneas pueden devolver SQLITE_BUSY — el tool debe responder isError en vez de colgar y el agente reintenta.",
+    "source": "ai-workspace starter pack (verificado con 3 agentes en paralelo)",
+    "tags": "sqlite,concurrencia"
+  },
+  {
+    "title": "Servidores dev en Windows SIEMPRE en background",
+    "body": "Nunca ejecutar servidores de desarrollo en primer plano (bloquean la terminal del agente indefinidamente). Patrón: Start-Process <cmd> -ArgumentList ... -WindowStyle Hidden, verificar el puerto por HTTP (nunca asumir), matar proceso stale si el puerto está ocupado, log a fichero si falla.",
+    "source": "ai-workspace starter pack",
+    "tags": "windows,dev-servers"
+  }
+]

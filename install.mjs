@@ -18,7 +18,7 @@ import {
   writeFileSync,
   appendFileSync,
 } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -115,6 +115,78 @@ if (process.argv.includes("--no-mcp")) {
     } catch {
       step("agy: ya registrado o registro falló (no bloqueante)");
     }
+  }
+}
+
+// 3.5) Sembrar el store GLOBAL de esta máquina con lecciones universales
+//      (solo la PRIMERA instalación: si ya existe, no se toca — respeta lo acumulado)
+const GLOBAL_HOME = path.join(os.homedir(), ".ai-workspace", "global");
+function brokerCall(tool, args) {
+  return new Promise((resolve) => {
+    const p = spawn("node", [absBroker], { stdio: ["pipe", "pipe", "ignore"] });
+    let out = "";
+    p.stdout.setEncoding("utf8");
+    p.stdout.on("data", (c) => (out += c));
+    p.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {} },
+      }) + "\n",
+    );
+    p.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: tool, arguments: args },
+      }) + "\n",
+    );
+    setTimeout(() => {
+      const resp = out
+        .split("\n")
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+        .find((m) => m.id === 2);
+      p.kill();
+      resolve(resp?.result?.content?.[0]?.text ?? "sin respuesta");
+    }, 900);
+  });
+}
+
+if (
+  !process.argv.includes("--no-seed") &&
+  !existsSync(path.join(GLOBAL_HOME, "memory.db"))
+) {
+  try {
+    const lessons = JSON.parse(
+      readFileSync(
+        path.join(REPO, "template", "seed", "global-lessons.json"),
+        "utf8",
+      ),
+    );
+    for (const l of lessons) {
+      await brokerCall("record_lesson", {
+        title: l.title,
+        body: l.body,
+        scope: "GLOBAL",
+        repo: "",
+        source: l.source ?? "ai-workspace starter pack",
+        tags: l.tags ?? "global",
+      });
+    }
+    step(
+      `store global sembrado: ${lessons.length} lecciones universales en ${GLOBAL_HOME} (visible por todos tus proyectos)`,
+    );
+  } catch {
+    step("seed del store global omitido (no bloqueante)");
   }
 }
 

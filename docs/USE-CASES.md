@@ -86,7 +86,9 @@ aprenden a administrar su propia documentación** (la inteligencia es la metodol
    proyecto para que el equipo comparta los canónicos vía git — la `memory.db` queda
    local por `.gitignore`, es la sesión de cada máquina).
 3. Lo único transversal por máquina es el store global (`~/.ai-workspace/global/`):
-   cruza los PROYECTOS de ese dev, nunca entre devs.
+   cruza los PROYECTOS de ese dev, nunca entre devs. La primera instalación siembra
+   5 lecciones universales (starter pack) — sus agentes nacen con conocimiento
+   probado y acumulan el suyo con su trabajo.
 4. La metodología vive dentro del `.ai/` instalado (`playbooks/doc-admin.md`,
    `onboarding.md`, gobernanza en `README.md`) — sus agentes saben administrar la
    documentación sin necesidad de leer nada del repo del producto.
