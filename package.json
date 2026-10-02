@@ -1,6 +1,6 @@
 {
   "name": "ai-workspace",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Sistema de contexto, conocimiento y memoria para workspaces multi-repo: Context Broker MCP zero-dep (SQLite+FTS5) que hace que OpenCode, Codex, agy y cualquier agente CLI sepan todo de tu proyecto sin inflar el contexto.",
   "type": "module",
   "bin": {

@@ -71,25 +71,33 @@ al dashboard del ERP", (3) "mejorar el guardrail del chat", (4) "subir build a T
 de .ai/workspace/ROUTER.md juntos.
 ```
 
-## Caso 4 — Equipo: instalación en cada PC
+## Caso 4 — Equipo: cada dev con el sistema en SU PC
 
-**Situación**: N desarrolladores, cada uno con su OpenCode/suscripción, todos deben saber lo mismo.
+**Situación**: N desarrolladores, cada uno con su OpenCode/suscripción y SUS proyectos.
+Nadie comparte memoria: cada quien instala el sistema en su máquina y **sus agentes
+aprenden a administrar su propia documentación** (la inteligencia es la metodología
 
-1. El repo del producto ya es público: cada dev ejecuta `npx github:LFDIAZDEV2209/ai-workspace`
-   **desde la raíz del workspace compartido** (el repo del código, no este).
-2. El `.ai/` generado se **commitea al repo del producto** → la memoria (excepto `memory.db`,
-   que es personal/local por .gitignore) y los canónicos se comparten vía git: todos los
-   agentes de todos los PCs leen el mismo conocimiento.
-3. Cada dev registra en su máquina el MCP (el instalador lo hace) — los tokens de sus
-   suscripciones jamás tocan el repo.
+- el tooling, no una base compartida).
 
-**Prompt para el primer día de un dev nuevo**:
+1. Cada dev ejecuta `npx github:LFDIAZDEV2209/ai-workspace` **en la raíz de su
+   proyecto/workspace** — el instalador crea su `.ai/` local y registra el MCP en sus
+   agentes (OpenCode/Codex/agy de ESE PC).
+2. El conocimiento de cada proyecto vive en SU `.ai/` (se puede commitear al repo del
+   proyecto para que el equipo comparta los canónicos vía git — la `memory.db` queda
+   local por `.gitignore`, es la sesión de cada máquina).
+3. Lo único transversal por máquina es el store global (`~/.ai-workspace/global/`):
+   cruza los PROYECTOS de ese dev, nunca entre devs.
+4. La metodología vive dentro del `.ai/` instalado (`playbooks/doc-admin.md`,
+   `onboarding.md`, gobernanza en `README.md`) — sus agentes saben administrar la
+   documentación sin necesidad de leer nada del repo del producto.
+
+**Prompt para el primer día de un dev nuevo** (en su proyecto):
 
 ```text
-Acabo de clonar este workspace. Usa SOLO el sistema .ai/ y el MCP context-broker:
-(1) preséntame el workspace (repos, estado, riesgos), (2) dime qué tareas hay abiertas
-y cuál es la más urgente, (3) muéstrame las 3 últimas decisiones registradas.
-No me hagas leer ficheros a mí: tú consúltalos.
+Acabo de instalar el sistema .ai/ en este proyecto. Usa SOLO el sistema .ai/ y el
+MCP context-broker: (1) preséntame el workspace (repos, estado, riesgos), (2) dime
+qué tareas hay abiertas y cuál es la más urgente, (3) muéstrame las 3 últimas
+decisiones registradas. No me hagas leer ficheros a mí: tú consúltalos.
 ```
 
 ## Anti-patrones (lo que NO hay que hacer)

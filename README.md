@@ -148,6 +148,7 @@ paths de Codex/agy.
 - [ ] Hooks de cierre de sesión automáticos por plugin
 - [ ] `memory.mjs` CLI avanzado (stats, GC de sessions EPHEMERAL)
 - [ ] Dashboard web del estado del workspace
+- [ ] Publicación en npm registry (`npx ai-workspace` a secas)
 
 ---
 

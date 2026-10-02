@@ -28,7 +28,7 @@
   knowledge/           ← conocimiento estructurado, 1 fichero = 1 entrada
     decisions/ lessons/ incidents/ patterns/
   playbooks/           ← procedimientos operativos
-    onboarding.md  herdr.md  qa.md
+    onboarding.md  qa.md  herdr.md  doc-admin.md
   memory/              ← SQLite + FTS5 (zero-dep node:sqlite)
     memory.db  schema.sql
   scripts/             ← automatización

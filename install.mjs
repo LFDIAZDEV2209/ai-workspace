@@ -138,8 +138,9 @@ SIGUIENTE PASO (obligatorio): pídele esto a tu agente (OpenCode/Codex/agy):
 
   «Lee .ai/playbooks/onboarding.md y rellena con datos reales de este workspace:
    .ai/workspace/PROJECTS.md, OVERVIEW.md, ROUTER.md y AGENT-MATRIX.md.
-   Si ya tengo documentación dispersa, haz antes el inventario del caso 2 de
-   docs/USE-CASES.md y consolida. No inventes nada: pregunta lo que falte.»
+   Si tengo documentación dispersa (PLAN/AUDIT/HANDOFF/CONTINUATION), administra
+   primero con .ai/playbooks/doc-admin.md: inventario → mi aprobación → migración.
+   No inventes nada: pregunta lo que falte.»
 
 Docs: https://github.com/LFDIAZDEV2209/ai-workspace/tree/main/docs
 `);
