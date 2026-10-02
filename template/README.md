@@ -48,7 +48,9 @@
    - SESSION — handoffs en `.ai/sessions/` (se purgan a los 30 días).
    - PROJECT — afecta a un repo (lessons/decisions del repo, o `docs/` del repo).
    - WORKSPACE — afecta a varios repos (`.ai/knowledge/`).
-   - GLOBAL — aplicable a cualquier proyecto (`~/.config/opencode/`).
+   - GLOBAL — aplicable a CUALQUIER proyecto: se escribe en el store global de la
+     máquina (`~/.ai-workspace/global/`) y **todos los brokers de este PC lo leen**
+     (los hits aparecen marcados `[global]` en las búsquedas de cualquier proyecto).
      Solo PROJECT/WORKSPACE/GLOBAL entran en memoria permanente.
 4. **El código manda.** Si memoria y código discrepan, gana el código y se actualiza la memoria.
 5. **Nada de indexar todo a ciegas.** La memoria se alimenta por registros explícitos

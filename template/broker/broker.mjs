@@ -12,8 +12,15 @@
  * Uso CLI (sin MCP):  node .ai/broker/broker.mjs search "<query>" | overview | router "<tarea>" | health
  */
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync, existsSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  readdirSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +28,10 @@ const WORKSPACE_ROOT = path.resolve(HERE, "..", "..");
 const DB_PATH = path.join(WORKSPACE_ROOT, ".ai", "memory", "memory.db");
 const SCHEMA_PATH = path.join(WORKSPACE_ROOT, ".ai", "memory", "schema.sql");
 const WS_DIR = path.join(WORKSPACE_ROOT, ".ai", "workspace");
+// Store GLOBAL de la máquina: conocimiento cross-proyecto. Todo broker de este PC
+// lee aquí; los registros con scope GLOBAL se escriben aquí (los demás, al local).
+const GLOBAL_DIR = path.join(os.homedir(), ".ai-workspace", "global");
+const GLOBAL_DB_PATH = path.join(GLOBAL_DIR, "memory.db");
 
 // ---------------------------------------------------------------------------
 // Store
@@ -34,16 +45,26 @@ function openDb() {
   return db;
 }
 
+let gdb;
+function openGlobalDb() {
+  if (gdb) return gdb;
+  mkdirSync(GLOBAL_DIR, { recursive: true });
+  gdb = new DatabaseSync(GLOBAL_DB_PATH);
+  if (existsSync(SCHEMA_PATH)) gdb.exec(readFileSync(SCHEMA_PATH, "utf8"));
+  gdb.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;");
+  return gdb;
+}
+
 function nowIso() {
   return new Date().toISOString().slice(0, 19).replace("T", " ");
 }
 
-function nextId(type) {
+function nextId(type, store = openDb()) {
   const prefix =
     { lesson: "L", decision: "D", incident: "I", pattern: "P", handoff: "S" }[
       type
     ] ?? "X";
-  const row = openDb()
+  const row = store
     .prepare("SELECT id FROM memory WHERE id LIKE ? ORDER BY id DESC LIMIT 1")
     .get(`${prefix}%`);
   const n = row ? parseInt(row.id.slice(1), 10) + 1 : 1;
@@ -61,7 +82,7 @@ function slugify(text) {
     .slice(0, 60);
 }
 
-function writeKnowledgeFile(input, id) {
+function writeKnowledgeFile(input, id, knowledgeRoot) {
   const {
     type,
     scope = "PROJECT",
@@ -79,14 +100,10 @@ function writeKnowledgeFile(input, id) {
   };
   const dir = dirMap[type];
   if (!dir) return; // handoff: solo memoria
+  // raíz de knowledge: la del workspace, o la del store global (scope GLOBAL)
+  const base = knowledgeRoot ?? path.join(WORKSPACE_ROOT, ".ai", "knowledge");
   const date = new Date().toISOString().slice(0, 10);
-  const file = path.join(
-    WORKSPACE_ROOT,
-    ".ai",
-    "knowledge",
-    dir,
-    `${date}-${slugify(title)}.md`,
-  );
+  const file = path.join(base, dir, `${date}-${slugify(title)}.md`);
   if (existsSync(file)) return file; // no sobreescribir
   const content =
     [
@@ -102,15 +119,11 @@ function writeKnowledgeFile(input, id) {
       .filter(Boolean)
       .join("\n") + "\n";
   try {
+    // el dir puede no existir aún (store global recién creado): crearlo siempre
+    mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, content, "utf8");
     // actualizar índice del README del tipo (fila al final de la tabla si existe)
-    const readmePath = path.join(
-      WORKSPACE_ROOT,
-      ".ai",
-      "knowledge",
-      dir,
-      "README.md",
-    );
+    const readmePath = path.join(base, dir, "README.md");
     if (existsSync(readmePath)) {
       const readme = readFileSync(readmePath, "utf8");
       // auto-index sólo si la tabla tiene columna "Fichero" (cada tipo tiene shape distinto);
@@ -157,10 +170,16 @@ function upsertMemory(input) {
   )
     throw new Error(`scope inválido: ${scope}`);
   if (!title || !body) throw new Error("title y body son obligatorios");
+  // routing del store: scope GLOBAL → store de la máquina (visible desde cualquier proyecto);
+  // los demás scopes → memoria local del workspace
+  const useGlobal = scope === "GLOBAL";
+  const d = useGlobal ? openGlobalDb() : openDb();
+  const knowledgeRoot = useGlobal
+    ? path.join(GLOBAL_DIR, "knowledge")
+    : undefined;
   // project por defecto: nombre del workspace (sin hardcodear ningún producto)
   const projectName = project || path.basename(WORKSPACE_ROOT).toLowerCase();
-  const d = openDb();
-  const id = nextId(type);
+  const id = nextId(type, d);
   d.prepare(
     `INSERT INTO memory (id, type, scope, project, repo, title, body, status, source, commit_sha, confidence, supersedes, tags, created_at, updated_at)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -186,7 +205,7 @@ function upsertMemory(input) {
       "UPDATE memory SET status='superseded', updated_at=? WHERE id=?",
     ).run(nowIso(), supersedes);
   }
-  writeKnowledgeFile(input, id);
+  writeKnowledgeFile(input, id, knowledgeRoot);
   return id;
 }
 
@@ -231,11 +250,12 @@ function scanKnowledgeFiles(query, { type = "", limit = 12 } = {}) {
   return hits.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
-function searchMemory(
+function searchOneDb(
+  store,
   query,
-  { scope = "", repo = "", type = "", limit = 10 } = {},
+  { type = "", scope = "", repo = "", limit = 10 },
+  isGlobal,
 ) {
-  const d = openDb();
   const params = [];
   let sql = `
     SELECT m.id, m.type, m.scope, m.repo, m.title, m.status, m.confidence, m.supersedes, m.tags,
@@ -253,13 +273,38 @@ function searchMemory(
     sql += " AND m.scope = ?";
     params.push(scope);
   }
-  if (repo) {
+  // el filtro por repo sólo aplica al store local: los hits globales vienen
+  // de OTROS proyectos y su repo no es comparable
+  if (repo && !isGlobal) {
     sql += " AND (m.repo LIKE ? OR m.repo = 'workspace')";
     params.push(`%${repo}%`);
   }
   sql += " ORDER BY rank LIMIT ?";
   params.push(limit);
-  return d.prepare(sql).all(...params);
+  return store.prepare(sql).all(...params);
+}
+
+function searchMemory(
+  query,
+  { scope = "", repo = "", type = "", limit = 10 } = {},
+) {
+  const hits = searchOneDb(
+    openDb(),
+    query,
+    { type, scope, repo, limit },
+    false,
+  );
+  // store global de la máquina: conocimiento cross-proyecto (si ya existe)
+  if (existsSync(GLOBAL_DB_PATH)) {
+    const gHits = searchOneDb(
+      openGlobalDb(),
+      query,
+      { type, scope: "", repo: "", limit },
+      true,
+    ).map((r) => ({ ...r, fromGlobal: true }));
+    return [...hits, ...gHits].sort((a, b) => a.rank - b.rank).slice(0, limit);
+  }
+  return hits;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +477,12 @@ function toolHealth() {
       "SELECT COUNT(*) c FROM memory WHERE updated_at < datetime('now','-60 days')",
     )
     .get().c;
-  return `memory.db OK · ${total} entradas · ${stale} sin tocar hace >60d · WAL activo`;
+  let globalPart = "";
+  if (existsSync(GLOBAL_DB_PATH)) {
+    const gt = openGlobalDb().prepare("SELECT COUNT(*) c FROM memory").get().c;
+    globalPart = ` · global cross-proyecto: ${gt} entradas (${GLOBAL_DIR})`;
+  }
+  return `memory.db OK · ${total} entradas · ${stale} sin tocar hace >60d · WAL activo${globalPart}`;
 }
 
 const TOOLS = [
@@ -448,10 +498,11 @@ const TOOLS = [
   ],
   [
     "search_knowledge",
-    "Búsqueda híbrida: FTS de memoria (handoffs/ephemeral) + escaneo vivo de .ai/knowledge (siempre fresco).",
+    "Búsqueda híbrida: FTS de memoria local + store global cross-proyecto + escaneo vivo de .ai/knowledge (siempre fresco). Los hits [global] vienen de ~/.ai-workspace/global/.",
     (a) => {
       const dbHits = searchMemory(a.query, a).map(
-        (r) => `${r.id} [${r.type}/${r.scope}] ${r.title}\n  ${r.snippet}`,
+        (r) =>
+          `${r.fromGlobal ? "[global] " : ""}${r.id} [${r.type}/${r.scope}] ${r.title}\n  ${r.snippet}`,
       );
       const fileHits = scanKnowledgeFiles(a.query, a).map(
         (r) => `${r.id} [${r.type}] ${r.title}\n  ${r.snippet}`,
@@ -510,7 +561,11 @@ const TOOLS = [
       return `handoff ${id} registrada en memoria. Recuerda: actualizar OVERVIEW.md/OPEN-ITEMS.md si corresponde.`;
     },
   ],
-  ["memory_health", "Salud de la memoria.", () => toolHealth()],
+  [
+    "memory_health",
+    "Salud de la memoria (local + store global cross-proyecto).",
+    () => toolHealth(),
+  ],
 ];
 
 // ---------------------------------------------------------------------------
@@ -530,7 +585,7 @@ function handle(req) {
         // eco de la versión pedida por el cliente (fallback 2024-11-05)
         protocolVersion: params?.protocolVersion ?? "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "context-broker", version: "1.0.3" },
+        serverInfo: { name: "context-broker", version: "1.1.0" },
       },
     });
   }

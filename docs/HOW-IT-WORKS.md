@@ -58,13 +58,21 @@ incluido desde Node 22.5) que habla **JSON-RPC 2.0 sobre stdio, delimitado por n
 
 ### El escaneo híbrido (anti-staleness)
 
-`search_knowledge` busca en DOS fuentes y fusiona:
+`search_knowledge` busca en TRES fuentes y fusiona por ranking:
 
-1. **memory.db (FTS5)** — lo registrado por los agentes (handoffs, lessons…).
-2. **Escaneo vivo de `.ai/knowledge/**/*.md`** — score por presencia del término en
+1. **memory.db local (FTS5)** — lo registrado en ESTE workspace.
+2. **Store global de la máquina (`~/.ai-workspace/global/memory.db`)** — conocimiento
+   `scope: GLOBAL` de CUALQUIER proyecto de este PC; los hits salen marcados `[global]`.
+   Ahí van las lecciones generales (mcp/windows/tooling): el agente del repo B aprende
+   lo que el agente del repo A documentó, sin compartir memoria sensible del proyecto.
+3. **Escaneo vivo de `.ai/knowledge/**/*.md`** — score por presencia del término en
    nombre de fichero y contenido. **Siempre fresco**: si un agente edita el fichero
    hace 3 segundos, la búsqueda lo ve (la memoria es solo el índice; **el código y los
    docs mandan**).
+
+> Sobre **vector search**: queda reservado (el schema es aditivo) pero no se añade de
+> fábrica — para recuperar notas por keywords, FTS5 gana a coste cero y sin dependencias;
+> `sqlite-vec` se integra después solo si el volumen o las consultas semánticas lo justifican.
 
 ## 3. El pipeline de aprendizaje (fin de sesión)
 
@@ -82,13 +90,13 @@ sesión → node .ai/scripts/session-close.mjs --summary "..." --agent <agente> 
 
 **Clasificación de conocimiento** (impide que lo temporal contamine lo permanente):
 
-| Scope       | Vive en                               | Purga         |
-| ----------- | ------------------------------------- | ------------- |
-| `EPHEMERAL` | notas sueltas, capturas, .bak         | tras la tarea |
-| `SESSION`   | `.ai/sessions/` + handoffs en memoria | 30 días       |
-| `PROJECT`   | `docs/` del repo o knowledge del repo | permanente    |
-| `WORKSPACE` | `.ai/knowledge/` + `.ai/workspace/`   | permanente    |
-| `GLOBAL`    | `~/.config/opencode/`                 | permanente    |
+| Scope       | Vive en                                                                  | Purga         |
+| ----------- | ------------------------------------------------------------------------ | ------------- |
+| `EPHEMERAL` | notas sueltas, capturas, .bak                                            | tras la tarea |
+| `SESSION`   | `.ai/sessions/` + handoffs en memoria                                    | 30 días       |
+| `PROJECT`   | `docs/` del repo o knowledge del repo                                    | permanente    |
+| `WORKSPACE` | `.ai/knowledge/` + `.ai/workspace/`                                      | permanente    |
+| `GLOBAL`    | store global `~/.ai-workspace/global/` + reglas en `~/.config/opencode/` | permanente    |
 
 ## 4. Gobernanza (las reglas que evitan el monstruo)
 

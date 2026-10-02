@@ -78,7 +78,8 @@ npx github:LFDIAZDEV2209/ai-workspace --no-mcp   # solo scaffold de .ai/
 ## 🔍 Cómo funciona (30 segundos)
 
 ```
-.agi→ .ai/
+~/.ai-workspace/global/  ← store GLOBAL de la máquina: knowledge cross-proyecto (todos los brokers lo leen)
+.ai/
   broker/broker.mjs      ← Context Broker MCP (stdio, JSON-RPC 2.0, zero-dep node:sqlite)
   memory/memory.db       ← SQLite WAL + FTS5: lessons · decisions · incidents · patterns · handoffs
   workspace/             ← canónicos vivos (~5 KB c/u): OVERVIEW · PROJECTS · ROUTER · AGENT-MATRIX · OPEN-ITEMS
@@ -89,6 +90,11 @@ npx github:LFDIAZDEV2209/ai-workspace --no-mcp   # solo scaffold de .ai/
 
 - **Arranque frío**: el agente lee ~4 KB de AGENTS.md y pide lo demás al broker (`workspace_overview`,
   `get_dependencies`, `search_knowledge`, `read_doc`… — 15 tools).
+- **Aprendizaje entre proyectos**: una lesson/decisión con `scope: GLOBAL` se escribe en el
+  store global de la máquina y aparece marcada `[global]` en las búsquedas de cualquier
+  otro proyecto de ese PC — el agente del repo B aprende lo que el agente del repo A
+  documentó. Demo real: una lesson nacida en un workspace fue encontrada por el broker
+  de otro proyecto en otra ruta con su memoria local vacía.
 - **Cierre de sesión**: `node .ai/scripts/session-close.mjs` registra el handoff y emite el checklist
   (OVERVIEW, OPEN-ITEMS, índices, commits).
 - **Higiene continua**: `doc-health` detecta docs de sesión sueltas, canónicos >12 KB, stale >45 días,
@@ -106,7 +112,8 @@ Arquitectura completa: **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)**
 | **Claude Code**                     | lee `.ai/` vía `CLAUDE.md` pointer           | ✅ lectura (sin MCP)              |
 | **Cualquier CLI que lea AGENTS.md** | el sistema vive en ficheros, no en un vendor | por diseño                        |
 
-> **Prueba de fuego documentada**: agentes nuevos sin contexto previo respondieron
+| **Prueba de fuego documentada**: agentes nuevos sin contexto previo respondieron
+
 > 4/4 preguntas del workspace (repos, routing de tarea, comandos de build/test,
 > bloqueos de TestFlight) usando únicamente este sistema — en 3 motores distintos.
 
