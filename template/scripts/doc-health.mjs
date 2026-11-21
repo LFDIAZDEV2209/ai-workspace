@@ -13,8 +13,9 @@ const ROOT = path.resolve(
   "..",
   "..",
 );
+// Solo docs de sesión "sueltos" (prefijo), no knowledge canónico ni sessions/operations.
 const PATTERN_SESSION =
-  /(PLAN|AUDIT|HANDOFF|CONTINUATION|INFORME|REPORTE|RESUMEN|REVIEW)/i;
+  /^(PLAN|AUDIT|HANDOFF|CONTINUATION|INFORME|REPORTE|RESUMEN|REVIEW)[-_ ]/i;
 // planes maestros canónicos y vivos (exentos del patrón de sesión)
 const WHITELIST = new Set([
   "00-PLAN-MAESTRO.md",
@@ -22,7 +23,7 @@ const WHITELIST = new Set([
   "roadmap.md",
 ]);
 const EXCLUDE_DIRS =
-  /node_modules|\.git|\.codegraph|bin|obj|\.venv|__pycache__|dist|\.next|\.agents[/\\]skills|\.opencode[/\\]skills|\.ai[/\\]archive|openspec[/\\]changes[/\\]archive/;
+  /node_modules|\.git|\.codegraph|\.worktrees|bin|obj|\.venv|__pycache__|dist|\.next|\.agents[/\\]skills|\.opencode[/\\]skills|\.ai[/\\]archive|openspec[/\\]changes[/\\]archive/;
 const NOW = Date.now();
 
 const problems = {
@@ -35,7 +36,14 @@ const problems = {
 };
 
 function scan(dir, rel = "") {
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
+  // Un worktree puede desaparecer mientras se poda: no romper el health check.
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
     const abs = path.join(dir, e.name);
     const relPath = path.join(rel, e.name);
     if (e.isDirectory()) {
@@ -46,7 +54,8 @@ function scan(dir, rel = "") {
       if (
         PATTERN_SESSION.test(e.name) &&
         !WHITELIST.has(e.name) &&
-        !relPath.includes("archive")
+        !relPath.includes("archive") &&
+        !/^\.ai[\\/](sessions|operations|knowledge)[\\/]/.test(relPath)
       )
         problems.sessionFiles.push(relPath);
       // 2) tamaño
@@ -112,23 +121,32 @@ console.log(`- knowledge sin indexar en README: ${problems.unindexed.length}`);
 problems.unindexed.slice(0, 20).forEach((p) => console.log(`  · ${p}`));
 // anti-drift: la copia runtime del broker debe coincidir con la plantilla global
 function templateCheck() {
-  const tplBroker = path.join(
+  const tplRoot = path.join(
     process.env.USERPROFILE ?? "",
     ".config",
     "opencode",
     "templates",
     "ai-workspace",
-    "broker",
-    "broker.mjs",
   );
-  const wsBroker = path.join(ROOT, ".ai", "broker", "broker.mjs");
-  if (existsSync(tplBroker) && existsSync(wsBroker)) {
-    const a = readFileSync(tplBroker, "utf8");
-    const b = readFileSync(wsBroker, "utf8");
-    if (a !== b)
-      return '⚠️ broker desfasado vs plantilla global — ejecuta: Copy-Item "$env:USERPROFILE\\.config\\opencode\\templates\\ai-workspace\\broker\\broker.mjs" .ai\\broker\\';
+  const pairs = [
+    ["broker/broker.mjs", "broker/broker.mjs"],
+    ["scripts/doc-health.mjs", "scripts/doc-health.mjs"],
+    ["scripts/session-close.mjs", "scripts/session-close.mjs"],
+    ["scripts/context-compact.mjs", "scripts/context-compact.mjs"],
+    ["scripts/context-eval.mjs", "scripts/context-eval.mjs"],
+    ["scripts/pc-audit.ps1", "scripts/pc-audit.ps1"],
+    ["scripts/prune-worktrees.ps1", "scripts/prune-worktrees.ps1"],
+  ];
+  const drift = [];
+  for (const [rel, wsRel] of pairs) {
+    const a = path.join(tplRoot, rel);
+    const b = path.join(ROOT, ".ai", wsRel);
+    if (!existsSync(a) || !existsSync(b)) continue;
+    if (readFileSync(a, "utf8") !== readFileSync(b, "utf8")) drift.push(rel);
   }
-  return null;
+  return drift.length
+    ? `⚠️ tooling desfasado vs plantilla global: ${drift.join(", ")} — copia desde ~/.config/opencode/templates/ai-workspace/`
+    : null;
 }
 
 // anti-drift 2: variante de plataforma de impeccable (.agents vs .opencode) — drift conocido e

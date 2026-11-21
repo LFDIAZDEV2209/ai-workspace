@@ -86,11 +86,14 @@ npx github:LFDIAZDEV2209/ai-workspace --no-seed  # registra MCP pero sin leccion
   workspace/             ← canónicos vivos (~5 KB c/u): OVERVIEW · PROJECTS · ROUTER · AGENT-MATRIX · OPEN-ITEMS
   knowledge/             ← texto canónico estructurado (1 fichero = 1 entrada, indexado por README)
   playbooks/             ← onboarding · QA · orquestación (Herdr) · release
-  scripts/               ← session-close (learning pipeline) · doc-health (stale/duplicados/drift)
+  scripts/               ← session-close · doc-health · context-compact · context-eval
+                           · pc-audit (Windows) · prune-worktrees (Windows)
 ```
 
-- **Arranque frío**: el agente lee ~4 KB de AGENTS.md y pide lo demás al broker (`workspace_overview`,
-  `get_dependencies`, `search_knowledge`, `read_doc`… — 15 tools).
+- **Arranque frío**: el agente lee ~4 KB de AGENTS.md y pide lo demás al broker
+  (`context_brief`, `search_docs`, `read_doc`, `get_dependencies`… — 17 tools). `context_brief`
+  devuelve router + docs + knowledge + open items en una sola llamada; `search_docs` indexa
+  Markdown y specs OpenAPI con FTS5/BM25 y devuelve snippets, no archivos completos.
 - **Aprendizaje entre proyectos**: una lesson/decisión con `scope: GLOBAL` se escribe en el
   store global de la máquina y aparece marcada `[global]` en las búsquedas de cualquier
   otro proyecto de ese PC — el agente del repo B aprende lo que el agente del repo A
@@ -103,6 +106,10 @@ npx github:LFDIAZDEV2209/ai-workspace --no-seed  # registra MCP pero sin leccion
   (OVERVIEW, OPEN-ITEMS, índices, commits).
 - **Higiene continua**: `doc-health` detecta docs de sesión sueltas, canónicos >12 KB, stale >45 días,
   títulos duplicados, ficheros sin indexar y drift contra la plantilla global.
+- **Compactación y PC**: `context-compact` mueve sessions >90d y operations >180d (knowledge
+  > 180d solo se reporta); `context-eval` mide hit@3/hit@7 del retrieval; `pc-audit` audita RAM,
+  > worktrees y cachés y limpia Temp>7d sin tocar procesos; `prune-worktrees` solo poda worktrees
+  > limpios y fusionados.
 
 Arquitectura completa: **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)**
 
@@ -125,6 +132,9 @@ Arquitectura completa: **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)**
 
 ```bash
 node .ai/broker/broker.mjs overview            # resumen del workspace
+node .ai/broker/broker.mjs brief "<tarea>"     # router + docs + knowledge + open items
+node .ai/broker/broker.mjs docs "<keywords>"   # FTS5 sobre docs/openspec + specs OpenAPI
+node .ai/broker/broker.mjs read "<ruta>"       # doc concreto (allowlist + truncado)
 node .ai/broker/broker.mjs router "<tarea>"    # ¿qué repos involucra?
 node .ai/broker/broker.mjs search "<keywords>" # lessons/decisions/handoffs
 node .ai/broker/broker.mjs health              # salud de la memoria

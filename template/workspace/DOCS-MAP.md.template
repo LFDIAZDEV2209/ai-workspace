@@ -1,0 +1,35 @@
+# DOCS-MAP — Mapa de documentación activa
+
+> Rellena con el agente. Este mapa enruta; el detalle vive en los repos.
+
+## Corpus activo
+
+| Repo / raíz | Qué contiene | Docs aprox. |
+|---|---|---|
+| `openspec/` | changes activos + specs |  |
+| `<repo>/docs/` | documentación del repo |  |
+| `docs/` | documentación transversal |  |
+| `.ai/workspace/` | estado, router, backlog, este mapa |  |
+
+## Protocolo de recuperación
+
+1. `workspace_overview`.
+2. `context_brief(task)` — repos + docs + knowledge + open items.
+3. `search_docs(query)` — path + fecha + snippet.
+4. `read_doc(file, limit)` — solo 2-3 docs; default 12k chars.
+5. Código: `codegraph_explore`; nunca grep+read en cadena.
+
+Presupuesto: ≤6 llamadas / ≤8k tokens antes de la primera hipótesis.
+
+## Convención
+
+- Docs nuevos con frontmatter (`title`, `project`, `type`, `status`, `updated`, `tags`).
+- Un tema por fichero. Planes de sesión en `.ai/sessions/` o `.ai/operations/`.
+- No indexar `node_modules`, `.worktrees`, `archive`, `dist`, `build`, `bin`, `obj`, `.venv`.
+- OpenSpec (workflow) y OpenAPI (contrato generado) no son el mismo corpus.
+
+## Mantenimiento
+
+- `node .ai/scripts/doc-health.mjs`
+- `node .ai/scripts/context-compact.mjs`
+- `powershell -File .ai/scripts/pc-audit.ps1 -Disk`

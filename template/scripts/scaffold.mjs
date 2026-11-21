@@ -53,6 +53,10 @@ copyTemplate("broker/broker.mjs");
 copyTemplate("memory/schema.sql");
 copyTemplate("scripts/doc-health.mjs");
 copyTemplate("scripts/session-close.mjs");
+copyTemplate("scripts/context-compact.mjs");
+copyTemplate("scripts/context-eval.mjs");
+copyTemplate("scripts/pc-audit.ps1");
+copyTemplate("scripts/prune-worktrees.ps1");
 
 // playbooks y knowledge genéricos
 for (const f of readdirSync(path.join(TEMPLATE_ROOT, "playbooks")))
@@ -67,6 +71,7 @@ copyTemplate("workspace/PROJECTS.md.template");
 copyTemplate("workspace/ROUTER.md.template");
 copyTemplate("workspace/AGENT-MATRIX.md.template");
 copyTemplate("workspace/OPEN-ITEMS.md.template");
+copyTemplate("workspace/DOCS-MAP.md.template");
 copyTemplate("README.md");
 
 console.log(`✅ .ai/ listo en ${target} (${written} ficheros creados)`);

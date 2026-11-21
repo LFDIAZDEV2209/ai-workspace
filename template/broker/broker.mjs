@@ -9,7 +9,8 @@
  *   opencode.jsonc  → mcp.servers["context-broker"] = ["node", ".ai/broker/broker.mjs"]
  *   codex config.toml → [mcp_servers.context-broker]
  *
- * Uso CLI (sin MCP):  node .ai/broker/broker.mjs search "<query>" | overview | router "<tarea>" | health
+ * Uso CLI (sin MCP):  node .ai/broker/broker.mjs search|docs "<query>" | brief "<tarea>" |
+ *                     read "<ruta>" | overview | router "<tarea>" | health
  */
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -18,8 +19,11 @@ import {
   readdirSync,
   writeFileSync,
   mkdirSync,
+  statSync,
+  realpathSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -32,6 +36,203 @@ const WS_DIR = path.join(WORKSPACE_ROOT, ".ai", "workspace");
 // lee aquí; los registros con scope GLOBAL se escriben aquí (los demás, al local).
 const GLOBAL_DIR = path.join(os.homedir(), ".ai-workspace", "global");
 const GLOBAL_DB_PATH = path.join(GLOBAL_DIR, "memory.db");
+
+// ---------------------------------------------------------------------------
+// Índice de documentación (Markdown de repos, OpenSpec y .ai) — FTS5 en memoria
+// ---------------------------------------------------------------------------
+// Se indexa bajo demanda (primer search_docs/context_brief) y se reconstruye
+// cada 10 min. No persiste estado: cero staleness y cero ficheros nuevos.
+const DOC_SKIP_SEGMENTS = new Set([
+  "node_modules",
+  ".git",
+  ".worktrees",
+  ".next",
+  "dist",
+  "build",
+  "bin",
+  "obj",
+  ".venv",
+  "venv",
+  "__pycache__",
+  "coverage",
+  ".turbo",
+  "archive",
+]);
+const DOC_MAX_BYTES = 1024 * 1024;
+// ROUTER/OPEN-ITEMS tienen tools dedicadas: indexarlos duplica ruido en el brief.
+const DOC_SKIP_FILES = new Set(["ROUTER.md", "OPEN-ITEMS.md"]);
+const DOCS_TTL_MS = 10 * 60 * 1000;
+let docsDb;
+let docsBuiltAt = 0;
+let docsStats = { count: 0, buildMs: 0 };
+
+function docRoots() {
+  const roots = [];
+  const add = (dir, repo) => {
+    if (existsSync(dir)) roots.push({ dir, repo });
+  };
+  add(path.join(WORKSPACE_ROOT, "docs"), "workspace/docs");
+  add(path.join(WORKSPACE_ROOT, "openspec"), "openspec");
+  add(path.join(WORKSPACE_ROOT, ".ai", "workspace"), "workspace/.ai");
+  add(path.join(WORKSPACE_ROOT, ".ai", "operations"), "workspace/.ai");
+  for (const e of readdirSync(WORKSPACE_ROOT, { withFileTypes: true })) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    if (DOC_SKIP_SEGMENTS.has(e.name)) continue;
+    add(path.join(WORKSPACE_ROOT, e.name, "docs"), e.name);
+  }
+  return roots;
+}
+
+function collectDocs() {
+  const seen = new Set();
+  const seenSig = new Set();
+  const docs = [];
+  const walk = (dir, repo) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      // No seguir symlinks/junctions: evita bucles y fugas fuera del workspace.
+      if (e.isSymbolicLink()) continue;
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (DOC_SKIP_SEGMENTS.has(e.name)) continue;
+        walk(abs, repo);
+        continue;
+      }
+      const isMarkdown = /\.mdx?$/i.test(e.name);
+      // Specs OpenAPI/Swagger: sí; package.json/lockfiles: no.
+      const isSpec =
+        /\.(json|ya?ml)$/i.test(e.name) &&
+        /openapi|swagger|contract/i.test(abs);
+      if (!e.isFile() || (!isMarkdown && !isSpec)) continue;
+      if (DOC_SKIP_FILES.has(e.name)) continue;
+      if (seen.has(abs)) continue;
+      let st;
+      try {
+        st = statSync(abs);
+      } catch {
+        continue;
+      }
+      if (st.size > DOC_MAX_BYTES) continue;
+      let raw;
+      try {
+        raw = readFileSync(abs, "utf8").replace(/^\uFEFF/, "");
+      } catch {
+        continue;
+      }
+      // Copias idénticas en varios repos (p. ej. docs/elevenlabs): indexar una.
+      const sig = createHash("sha1").update(raw).digest("hex");
+      if (seenSig.has(sig)) continue;
+      seenSig.add(sig);
+      const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      const fmTitle = fm?.[1]
+        .match(/^title:\s*(.+)$/m)?.[1]
+        ?.trim()
+        .replace(/^["']|["']$/g, "");
+      const h1 = raw.match(/^#\s+(.+)$/m)?.[1]?.trim();
+      const h2 = raw.match(/^##\s+(.+)$/m)?.[1]?.trim();
+      const title = (
+        fmTitle ||
+        h1 ||
+        h2 ||
+        e.name.replace(/\.mdx?$/i, "")
+      ).slice(0, 160);
+      docs.push({
+        path: path.relative(WORKSPACE_ROOT, abs).replace(/\\/g, "/"),
+        repo,
+        title,
+        body: raw,
+        updated: new Date(st.mtimeMs).toISOString().slice(0, 10),
+      });
+      seen.add(abs);
+    }
+  };
+  for (const r of docRoots()) walk(r.dir, r.repo);
+  return docs;
+}
+
+function getDocsDb() {
+  if (docsDb && Date.now() - docsBuiltAt < DOCS_TTL_MS) return docsDb;
+  if (docsDb) {
+    try {
+      docsDb.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  const t0 = Date.now();
+  const docs = collectDocs();
+  const d = new DatabaseSync(":memory:");
+  d.exec(
+    "CREATE VIRTUAL TABLE docs_fts USING fts5(path, repo UNINDEXED, title, body, updated UNINDEXED, tokenize='unicode61 remove_diacritics 2');",
+  );
+  const insert = d.prepare(
+    "INSERT INTO docs_fts (path, repo, title, body, updated) VALUES (?,?,?,?,?)",
+  );
+  d.exec("BEGIN");
+  for (const doc of docs) {
+    insert.run(doc.path, doc.repo, doc.title, doc.body, doc.updated);
+  }
+  d.exec("COMMIT");
+  docsDb = d;
+  docsBuiltAt = Date.now();
+  docsStats = { count: docs.length, buildMs: docsBuiltAt - t0 };
+  return docsDb;
+}
+
+function ftsTerms(text) {
+  return [
+    ...new Set(
+      (
+        String(text ?? "")
+          .toLowerCase()
+          .match(/[\p{L}\p{N}_-]{3,}/gu) ?? []
+      ).slice(0, 12),
+    ),
+  ];
+}
+
+function queryDocs(match, repo, limit) {
+  const d = getDocsDb();
+  const params = [match];
+  let sql = `SELECT path, repo, title, updated,
+                    snippet(docs_fts, 3, '›', '‹', '…', 18) AS snippet,
+                    bm25(docs_fts, 4.0, 0.0, 5.0, 1.0, 0.0) AS rank
+               FROM docs_fts
+              WHERE docs_fts MATCH ?`;
+  if (repo) {
+    sql += " AND repo = ?";
+    params.push(repo);
+  }
+  sql += " ORDER BY rank LIMIT ?";
+  params.push(limit);
+  return d.prepare(sql).all(...params);
+}
+
+// Sinónimos de dominio: el usuario dice "contrato" y el spec se llama openapi/swagger.
+const QUERY_SYNONYMS = {
+  contrato: ["contrato", "contract", "openapi", "swagger"],
+  contratos: ["contratos", "contract", "openapi", "swagger"],
+  api: ["api", "openapi", "endpoint"],
+};
+
+function searchDocs(query, { repo = "", limit = 8 } = {}) {
+  const terms = ftsTerms(query);
+  if (!terms.length) return [];
+  // Prefijo para términos >=4 letras: "cita"* también encuentra "citas".
+  const quote = (t) => `"${t.replace(/"/g, '""')}"${t.length >= 4 ? "*" : ""}`;
+  const groups = terms.map((t) => QUERY_SYNONYMS[t] ?? [t]);
+  const groupQ = (op) =>
+    groups.map((g) => `(${g.map(quote).join(" OR ")})`).join(` ${op} `);
+  // primero AND (precisión); si no hay nada, OR (recall)
+  let rows = queryDocs(groupQ("AND"), repo, limit);
+  if (!rows.length) rows = queryDocs(groupQ("OR"), repo, limit);
+  return rows;
+}
 
 // ---------------------------------------------------------------------------
 // Store
@@ -239,8 +440,14 @@ function scanKnowledgeFiles(query, { type = "", limit = 12 } = {}) {
           title: (raw.match(/^#\s+(?:L\d+ — )?(.+)$/m)?.[1] ?? f).trim(),
           snippet: raw
             .split("\n")
-            .filter(Boolean)
-            .slice(1, 5)
+            .map((l) => l.trim())
+            .filter(
+              (l) =>
+                l &&
+                !l.startsWith("#") &&
+                !/^\*\*(Fecha|Scope|Repos|Status|Evidencia|Tags):/.test(l),
+            )
+            .slice(0, 3)
             .join(" ")
             .slice(0, 220),
         });
@@ -358,6 +565,12 @@ function routeTask(task) {
 // ---------------------------------------------------------------------------
 // Tools MCP
 // ---------------------------------------------------------------------------
+// Ningún tool debe volcar un doc canónico completo: el contexto se paga por token.
+function capText(text, limit = 8000, hint = "") {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n\n[… truncado: ${text.length} chars${hint ? `; ${hint}` : ""}]`;
+}
+
 function toolOverview() {
   const d = openDb();
   const count = (t) =>
@@ -369,30 +582,46 @@ function toolOverview() {
     ? readdirSync(changesDir).filter((n) => n !== "archive")
     : [];
   const overview = readWs("OVERVIEW.md");
-  // primeras secciones del doc canónico (progressive disclosure; cero contenido hardcodeado)
+  // Preámbulo = últimos cambios (entradas más recientes antes del primer ##).
+  const preamble = overview
+    .split(/^## /m)[0]
+    .replace(/^#\s+.*$/m, "")
+    .trim();
+  // primeras secciones del doc canónico, recortadas por sección (progressive disclosure).
+  // No volcar 80 KB de estado: el detalle se pide con read_doc/offset.
   const sections = overview
     .split(/^## /m)
     .slice(1, 4)
-    .map((s) => `## ${s.trimEnd()}`)
+    .map((s) => {
+      const [head, ...body] = s.trimEnd().split("\n");
+      return `## ${head.trim()}\n${body.join("\n").slice(0, 1400)}`;
+    })
     .join("\n\n");
-  return [
-    `## Workspace ${path.basename(WORKSPACE_ROOT)} — Overview`,
-    "",
-    "Resumen mínimo; el detalle va bajo demanda (read_doc / search_knowledge).",
-    "",
-    sections || overview.slice(0, 2000),
-    "",
-    `### Memoria activa`,
-    `lessons: ${count("lesson")} · decisions: ${count("decision")} · incidents: ${count("incident")} · patterns: ${count("pattern")}`,
-    `(memory.db = log íntegro de lo registrado; el texto canónico y siempre fresco vive en .ai/knowledge/<tipo>/)`,
-    ...(existsSync(changesDir)
-      ? [`openspec changes activos: ${activeChanges.length}`]
-      : []),
-    "",
-    "### Lee on-demand (progressive disclosure)",
-    "- PROJECTS.md (mapa de repos/puertos) · ROUTER.md (tarea→repos) · AGENT-MATRIX.md (agente según tarea) · OPEN-ITEMS.md (backlog)",
-    "- knowledge/{decisions,lessons,incidents,patterns}/ · playbooks/",
-  ].join("\n");
+  return capText(
+    [
+      `## Workspace ${path.basename(WORKSPACE_ROOT)} — Overview`,
+      "",
+      "Resumen mínimo; el detalle va bajo demanda (read_doc / search_knowledge).",
+      "",
+      ...(preamble ? ["### Últimos cambios", preamble.slice(0, 1800), ""] : []),
+      sections || overview.slice(0, 2000),
+      "",
+      `### Memoria activa`,
+      `lessons: ${count("lesson")} · decisions: ${count("decision")} · incidents: ${count("incident")} · patterns: ${count("pattern")}`,
+      `(memory.db = log íntegro de lo registrado; el texto canónico y siempre fresco vive en .ai/knowledge/<tipo>/)`,
+      ...(existsSync(changesDir)
+        ? [`openspec changes activos: ${activeChanges.length}`]
+        : []),
+      "",
+      "### Lee on-demand (progressive disclosure)",
+      "- `context_brief(task)` — arranque compacto: router + docs + knowledge + open items",
+      "- `search_docs(query)` — FTS sobre docs/, openspec/ y <repo>/docs/ de todos los repos",
+      "- PROJECTS.md (mapa de repos/puertos) · ROUTER.md (tarea→repos) · AGENT-MATRIX.md (agente según tarea) · OPEN-ITEMS.md (backlog)",
+      "- knowledge/{decisions,lessons,incidents,patterns}/ · playbooks/",
+    ].join("\n"),
+    8000,
+    'usa read_doc(file=".ai/workspace/OVERVIEW.md", offset=8000)',
+  );
 }
 
 function toolProjectContext(repo) {
@@ -415,15 +644,24 @@ function toolProjectContext(repo) {
   const kb = searchMemory("*", { repo: dir, limit: 8 })
     .map((r) => `- [${r.type}] ${r.title}`)
     .join("\n");
-  return `# Contexto: ${dir}\n\n${agents}\n\n### Memoria relacionada\n${kb || "sin entradas"}`;
+  return capText(
+    `# Contexto: ${dir}\n\n${agents}\n\n### Memoria relacionada\n${kb || "sin entradas"}`,
+    8000,
+    `usa read_doc(file="${dir}/AGENTS.md") para el detalle`,
+  );
 }
 
-function toolGetCurrentState() {
-  return readWs("OVERVIEW.md");
+function toolGetCurrentState({ limit = 24000 } = {}) {
+  const raw = readWs("OVERVIEW.md");
+  if (raw.length <= limit) return raw;
+  return `${raw.slice(0, limit)}\n\n[… OVERVIEW truncado: ${raw.length} chars; usa read_doc(file=".ai/workspace/OVERVIEW.md", offset=${limit})]`;
 }
-function toolGetOpenTasks() {
+function toolGetOpenTasks({ limit = 8000 } = {}) {
   const items = path.join(WORKSPACE_ROOT, ".ai", "workspace", "OPEN-ITEMS.md");
-  return existsSync(items) ? readFileSync(items, "utf8") : "sin OPEN-ITEMS.md";
+  if (!existsSync(items)) return "sin OPEN-ITEMS.md";
+  const raw = readFileSync(items, "utf8");
+  if (raw.length <= limit) return raw;
+  return `${raw.slice(0, limit)}\n\n[… OPEN-ITEMS truncado: ${raw.length} chars; usa read_doc(file=".ai/workspace/OPEN-ITEMS.md", offset=${limit})]`;
 }
 function toolGetKnowledge(dir, filter = {}) {
   const d = openDb();
@@ -457,16 +695,165 @@ function toolGetKnowledge(dir, filter = {}) {
   if (db) parts.push(db);
   if (files)
     parts.push(`### Ficheros canónicos (.ai/knowledge/${dir}s/)\n${files}`);
-  return parts.join("\n\n") || "sin entradas";
+  return capText(
+    parts.join("\n\n") || "sin entradas",
+    8000,
+    `usa read_doc(file=".ai/knowledge/${dir}s/<fichero>")`,
+  );
 }
-function toolGetDoc(file) {
+function toolGetDoc(file, { offset = 0, limit = 12000 } = {}) {
   if (!file)
-    return "⚠️ falta el argumento { file: \"ruta/relativa/a/.ai\" } — ej: file='workspace/OVERVIEW.md'";
-  const safe = file.replace(/\\/g, "/").replace(/^\.ai\//, "");
-  const p = path.join(WORKSPACE_ROOT, ".ai", safe);
-  if (!existsSync(p) || !p.startsWith(WORKSPACE_ROOT + path.sep + ".ai"))
-    return "⚠️ ruta fuera de .ai o inexistente";
-  return readFileSync(p, "utf8");
+    return "⚠️ falta el argumento { file: \"ruta/relativa\" } — ej: file='openspec/changes/<cambio>/proposal.md'";
+  const rel = String(file)
+    .replace(/\\/g, "/")
+    .replace(/^\.?\//, "")
+    .trim();
+  if (!rel || path.isAbsolute(rel) || rel.split("/").includes(".."))
+    return "⚠️ ruta inválida: usa una ruta relativa al workspace, sin `..`.";
+  const parts = rel.split("/");
+  const first = parts[0];
+  const allowed =
+    rel === "AGENTS.md" ||
+    [".ai", "openspec", "docs"].includes(first) ||
+    (parts.length >= 2 && (parts[1] === "docs" || parts[1] === "AGENTS.md"));
+  if (!allowed)
+    return "⚠️ read_doc solo permite .ai/, openspec/, docs/, <repo>/docs/ y <repo>/AGENTS.md.";
+  if (parts.some((s) => DOC_SKIP_SEGMENTS.has(s)))
+    return "⚠️ ruta excluida (node_modules, .git, .worktrees, archive, build, dist...).";
+  if (!/\.(mdx?|txt|json|ya?ml)$/i.test(rel))
+    return "⚠️ extensión no permitida (md, mdx, txt, json, yaml, yml).";
+  const abs = path.resolve(WORKSPACE_ROOT, rel);
+  if (!existsSync(abs)) return `⚠️ fichero no encontrado: ${rel}`;
+  let real;
+  try {
+    real = realpathSync(abs);
+  } catch {
+    return `⚠️ no se pudo resolver la ruta: ${rel}`;
+  }
+  const realRel = path.relative(WORKSPACE_ROOT, real).replace(/\\/g, "/");
+  if (realRel.startsWith("..") || path.isAbsolute(realRel))
+    return "⚠️ la ruta resuelta queda fuera del workspace.";
+  let raw;
+  try {
+    raw = readFileSync(real, "utf8").replace(/^\uFEFF/, "");
+  } catch (e) {
+    return `⚠️ no se pudo leer ${rel}: ${e.message}`;
+  }
+  const off = Math.max(0, Number(offset) || 0);
+  const max = Math.min(Math.max(Number(limit) || 12000, 1000), 60000);
+  const chunk = raw.slice(off, off + max);
+  const truncated = raw.length > off + max;
+  return `${chunk}${
+    truncated
+      ? `\n\n[… truncado: ${raw.length} chars; usa offset=${off + max}]`
+      : ""
+  }`;
+}
+
+function toolSearchDocs({ query = "", repo = "", limit = 8 } = {}) {
+  if (!query.trim()) return "⚠️ falta el argumento `query`.";
+  try {
+    getDocsDb();
+    const hits = searchDocs(query, {
+      repo,
+      limit: Math.min(Math.max(Number(limit) || 8, 1), 20),
+    });
+    if (!hits.length)
+      return `Sin resultados para "${query}" en ${docsStats.count} docs indexados (${docsStats.buildMs} ms). Prueba términos más cortos o \`search_knowledge\`.`;
+    return [
+      `## Docs — "${query}" (${hits.length}/${docsStats.count})`,
+      ...hits.map(
+        (h) => `- ${h.path} (${h.updated}) :: ${h.title}\n  ${h.snippet}`,
+      ),
+      "",
+      'Detalle: `read_doc(file="...")` solo en los 2-3 con más señal.',
+    ].join("\n");
+  } catch (e) {
+    return `⚠️ índice de docs no disponible: ${e.message}`;
+  }
+}
+
+function toolContextBrief({ task = "", repo = "" } = {}) {
+  if (!task.trim()) return "⚠️ falta el argumento `task`.";
+  const routed = routeTask(task);
+  const terms = ftsTerms(task);
+
+  // Knowledge: memoria + ficheros canónicos, deduplicado por título.
+  const seen = new Set();
+  const knowledge = [];
+  for (const r of [
+    ...searchMemory(task, { limit: 8 }),
+    ...scanKnowledgeFiles(task, { limit: 8 }),
+  ]) {
+    const key = (r.title || r.id || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    knowledge.push(r);
+    if (knowledge.length >= 6) break;
+  }
+
+  // Docs: no filtrar por repo del router (telemedicine no es un directorio);
+  // el ranking FTS ya prioriza los términos de la tarea.
+  let docs = [];
+  try {
+    docs = searchDocs(task, { repo, limit: 7 });
+  } catch {
+    docs = [];
+  }
+
+  // Open items: bloques de OPEN-ITEMS.md que comparten términos con la tarea.
+  const open = [];
+  const openPath = path.join(WS_DIR, "OPEN-ITEMS.md");
+  if (existsSync(openPath)) {
+    for (const block of readFileSync(openPath, "utf8").split(/\n\s*\n/)) {
+      const text = block.trim();
+      if (!text || text.startsWith("#")) continue;
+      const low = text.toLowerCase();
+      const score = terms.reduce((n, t) => n + (low.includes(t) ? 1 : 0), 0);
+      if (score > 0) open.push({ text, score });
+    }
+    open.sort((a, b) => b.score - a.score);
+  }
+
+  const lines = [
+    `# Brief — ${task}`,
+    "",
+    "## Repos (router)",
+    ...(routed.repos.length
+      ? routed.repos.map((r) => `- ${r}`)
+      : ["- sin clasificar"]),
+    "",
+  ];
+  if (docs.length) {
+    lines.push(`## Docs (${docs.length}/${docsStats.count})`);
+    for (const d of docs)
+      lines.push(`- ${d.path} (${d.updated}) :: ${d.title}`, `  ${d.snippet}`);
+    lines.push("");
+  }
+  if (knowledge.length) {
+    lines.push("## Knowledge");
+    for (const k of knowledge)
+      lines.push(
+        `- ${k.id} [${k.type}] ${k.title}`,
+        `  ${(k.snippet || "").slice(0, 220)}`,
+      );
+    lines.push("");
+  }
+  if (open.length) {
+    lines.push("## Open items");
+    for (const o of open.slice(0, 4))
+      lines.push(`- ${o.text.replace(/\s+/g, " ").slice(0, 260)}`);
+    lines.push("");
+  }
+  lines.push(
+    "## Siguiente paso",
+    '- Abre solo los 2-3 docs con más señal: `read_doc(file="...")`.',
+    "- Para código: `codegraph_explore` (no grep+read en cadena).",
+  );
+  const out = lines.join("\n");
+  return out.length > 16000
+    ? `${out.slice(0, 16000)}\n… (brief truncado)`
+    : out;
 }
 
 function toolHealth() {
@@ -482,7 +869,10 @@ function toolHealth() {
     const gt = openGlobalDb().prepare("SELECT COUNT(*) c FROM memory").get().c;
     globalPart = ` · global cross-proyecto: ${gt} entradas (${GLOBAL_DIR})`;
   }
-  return `memory.db OK · ${total} entradas · ${stale} sin tocar hace >60d · WAL activo${globalPart}`;
+  const docsPart = docsBuiltAt
+    ? ` · docs indexados: ${docsStats.count} (${docsStats.buildMs} ms)`
+    : " · docs: aún sin indexar (lazy)";
+  return `memory.db OK · ${total} entradas · ${stale} sin tocar hace >60d · WAL activo${globalPart}${docsPart}`;
 }
 
 const TOOLS = [
@@ -512,9 +902,19 @@ const TOOLS = [
     },
   ],
   [
+    "search_docs",
+    "Busca en Markdown de docs/, openspec/, <repo>/docs/ y .ai/ (FTS5 en memoria). Devuelve path+fecha+título+snippet; usa read_doc solo para el detalle.",
+    (a) => toolSearchDocs(a),
+  ],
+  [
+    "context_brief",
+    "Brief de arranque para una tarea: router de repos + docs + knowledge + open items. Úsalo tras workspace_overview para no leer ficheros a ciegas.",
+    (a) => toolContextBrief(a),
+  ],
+  [
     "get_current_state",
-    "Estado por módulo con evidencia (OVERVIEW.md completo).",
-    () => toolGetCurrentState(),
+    "Estado por módulo con evidencia (OVERVIEW.md; cap 24k chars, usa read_doc offset para más).",
+    (a) => toolGetCurrentState(a),
   ],
   [
     "get_decisions",
@@ -523,7 +923,11 @@ const TOOLS = [
   ],
   ["get_lessons", "Índice de lessons.", () => toolGetKnowledge("lesson")],
   ["get_incidents", "Índice de incidents.", () => toolGetKnowledge("incident")],
-  ["get_open_tasks", "Backlog vivo OPEN-ITEMS.md.", () => toolGetOpenTasks()],
+  [
+    "get_open_tasks",
+    "Backlog vivo OPEN-ITEMS.md (cap 8k chars; usa read_doc offset para el resto).",
+    (a) => toolGetOpenTasks(a),
+  ],
   [
     "get_dependencies",
     "Router: repos+docs involucrados según texto de tarea.",
@@ -531,8 +935,8 @@ const TOOLS = [
   ],
   [
     "read_doc",
-    "Lee un doc de .ai/ bajo demanda. CLAVE del argumento: `file` (no `path`). Ej: file='workspace/OVERVIEW.md'.",
-    (a) => toolGetDoc(a.file),
+    "Lee un doc bajo demanda (md/mdx/txt/json/yaml) de .ai/, openspec/, docs/ o <repo>/docs|AGENTS.md. Args: `file`, opcional `offset`/`limit` (default 12000 chars). No lee node_modules/.worktrees/archive.",
+    (a) => toolGetDoc(a.file, a),
   ],
   [
     "record_decision",
@@ -603,6 +1007,8 @@ function handle(req) {
               query: { type: "string" },
               task: { type: "string" },
               file: { type: "string" },
+              offset: { type: "integer" },
+              limit: { type: "integer" },
               title: { type: "string" },
               body: { type: "string" },
               type: { type: "string" },
@@ -668,6 +1074,9 @@ if (process.argv.length > 2) {
       const all = [...dbHits, ...fileHits];
       return all.join("\n\n") || "sin resultados";
     },
+    docs: () => toolSearchDocs({ query: args.join(" "), limit: 12 }),
+    brief: () => toolContextBrief({ task: args.join(" ") }),
+    read: () => toolGetDoc(args[0] ?? "", { limit: 20000 }),
     overview: toolOverview,
     router: () => JSON.stringify(routeTask(args.join(" ")), null, 1),
     health: toolHealth,
@@ -676,7 +1085,11 @@ if (process.argv.length > 2) {
       return "schema aplicado";
     },
   }[cmd];
-  console.log(out ? out() : `comandos: search|overview|router|health|seed`);
+  console.log(
+    out
+      ? out()
+      : `comandos: search|docs|brief|read|overview|router|health|seed`,
+  );
   process.exit(0);
 }
 

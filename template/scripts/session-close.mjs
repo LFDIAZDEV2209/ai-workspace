@@ -140,4 +140,6 @@ CHECKLIST MANUAL DEL AGENTE (no omitir):
  [ ] ¿Commits push a la rama correcta? git status limpio
  [ ] ¿Panels Herdr cerrados o documentados?
  [ ] ¿Docs del repo (docs/modules/<mod>/) necesitan actualización?
+ [ ] ¿Sessions >90d u operations >180d? → node .ai/scripts/context-compact.mjs
+ [ ] ¿Lanzaste servidores/tests? → powershell -File .ai/scripts/pc-audit.ps1 -Disk
 `);

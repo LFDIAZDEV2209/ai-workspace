@@ -19,7 +19,7 @@ FEATURE     OpenSpec + decisiones solo cuando la tarea lo requiere
             (openspec/changes/<feature>/ · ADRs)
    ↓
 SESSION     temporal; se consolida o se elimina al cerrar
-            (.ai/sessions/ → purga a 30 días · handoffs → memory.db)
+            (.ai/sessions/ → compactar a 90 días · handoffs → memory.db)
 ```
 
 **Qué se carga SIEMPRE**: solo el `AGENTS.md` raíz (~4 KB: mapa del sistema + reglas invariables).
@@ -31,17 +31,19 @@ SESSION     temporal; se consolida o se elimina al cerrar
 incluido desde Node 22.5) que habla **JSON-RPC 2.0 sobre stdio, delimitado por newlines**
 (NDJSON), el transporte estándar MCP.
 
-**15 tools**:
+**17 tools**:
 
 | Tool                                                    | Qué hace                                                             |
 | ------------------------------------------------------- | -------------------------------------------------------------------- |
-| `workspace_overview`                                    | Resumen mínimo (lee OVERVIEW.md dinámicamente; cero hardcode)        |
+| `workspace_overview`                                    | Resumen mínimo; preámbulo + 3 secciones capadas (~7 KB)              |
+| `context_brief`                                         | Router + docs + knowledge + open items en UNA llamada (~5 KB)        |
 | `project_context`                                       | Contexto de un repo: secciones de su AGENTS.md + memoria relacionada |
 | `search_knowledge`                                      | Búsqueda híbrida: FTS de memoria + escaneo vivo de `.ai/knowledge/`  |
-| `get_current_state` / `get_open_tasks`                  | OVERVIEW.md / OPEN-ITEMS.md completos                                |
+| `search_docs`                                           | FTS5/BM25 sobre docs/, openspec/, `<repo>/docs/` y specs OpenAPI     |
+| `get_current_state` / `get_open_tasks`                  | OVERVIEW/OPEN-ITEMS con cap (24 KB / 8 KB; offset para el resto)     |
 | `get_decisions` / `get_lessons` / `get_incidents`       | Índices con ruta del fichero canónico                                |
 | `get_dependencies`                                      | **Router**: texto de tarea → repos involucrados (tabla de ROUTER.md) |
-| `read_doc`                                              | Lee cualquier doc de `.ai/` bajo demanda                             |
+| `read_doc`                                              | Lee md/mdx/txt/json/yaml bajo allowlist; cap 12 KB + `offset`        |
 | `record_decision` / `record_lesson` / `record_incident` | Escritura al log de memoria + fichero canónico + índice README       |
 | `session_handoff`                                       | Handoff de cierre de sesión                                          |
 | `memory_health`                                         | Salud: entradas, WAL, stale                                          |
@@ -74,6 +76,22 @@ incluido desde Node 22.5) que habla **JSON-RPC 2.0 sobre stdio, delimitado por n
 > fábrica — para recuperar notas por keywords, FTS5 gana a coste cero y sin dependencias;
 > `sqlite-vec` se integra después solo si el volumen o las consultas semánticas lo justifican.
 
+### El índice de documentación (`search_docs`)
+
+`context_brief` y `search_docs` comparten un índice FTS5 **en memoria** que se construye
+lazy (primera llamada) y se reconstruye cada 10 minutos:
+
+- Indexa Markdown de `docs/`, `openspec/`, `<repo>/docs/`, `.ai/workspace/` y
+  `.ai/operations/`; incluye specs `.json/.yaml` cuyo path contenga `openapi/swagger/contract`.
+- Excluye `node_modules`, `.worktrees`, `.git`, `archive`, `dist`, `build`, `bin`, `obj`,
+  `.next` y `.venv`; no sigue symlinks (evita bucles y fugas).
+- Deduplica copias idénticas por SHA-1 (p. ej. docs replicados en varios repos).
+- Ranking BM25 con **peso de path (4×), título (5×) y body (1×)**, prefijos para términos
+  ≥4 letras y sinónimos de dominio (`contrato` → `contract/openapi/swagger`).
+- Devuelve `path + fecha + título + snippet`; nunca el archivo completo. El detalle se pide
+  con `read_doc(file, limit, offset)`.
+- En CoppAddresd indexa ~495 docs activos (no 20k: los README de `node_modules` no cuentan).
+
 ## 3. El pipeline de aprendizaje (fin de sesión)
 
 ```
@@ -93,7 +111,7 @@ sesión → node .ai/scripts/session-close.mjs --summary "..." --agent <agente> 
 | Scope       | Vive en                                                                  | Purga         |
 | ----------- | ------------------------------------------------------------------------ | ------------- |
 | `EPHEMERAL` | notas sueltas, capturas, .bak                                            | tras la tarea |
-| `SESSION`   | `.ai/sessions/` + handoffs en memoria                                    | 30 días       |
+| `SESSION`   | `.ai/sessions/` + handoffs en memoria                                    | 90 días       |
 | `PROJECT`   | `docs/` del repo o knowledge del repo                                    | permanente    |
 | `WORKSPACE` | `.ai/knowledge/` + `.ai/workspace/`                                      | permanente    |
 | `GLOBAL`    | store global `~/.ai-workspace/global/` + reglas en `~/.config/opencode/` | permanente    |
@@ -101,15 +119,31 @@ sesión → node .ai/scripts/session-close.mjs --summary "..." --agent <agente> 
 ## 4. Gobernanza (las reglas que evitan el monstruo)
 
 1. **Un fichero = un tema.** Prohibidos `PLAN-FINAL-X`, `CONTINUATION-X`, `AUDIT-X`, `HANDOFF-X` sueltos.
-2. **Canónicos pequeños**: OVERVIEW/PROJECTS/ROUTER/AGENT-MATRIX/OPEN-ITEMS ≤ ~6 KB c/u.
-3. **Progressive disclosure**: resumen primero (`overview`), detalle solo si hace falta (`read_doc`).
+2. **Canónicos pequeños**: OVERVIEW/PROJECTS/ROUTER/AGENT-MATRIX/OPEN-ITEMS ≤ ~10 KB c/u;
+   si crecen, los tools los capan y el detalle se pide con `offset`.
+3. **Progressive disclosure**: `workspace_overview` → `context_brief` → `search_docs` →
+   `read_doc` (2-3); presupuesto ≤6 llamadas / ≤8k tokens antes de la primera hipótesis.
 4. **El código manda**: memoria desactualizada pierde contra el código; al detectarlo se corrige la memoria.
 5. **No indexar a ciegas**: la memoria se alimenta por `record_*` explícitos y el pipeline de cierre.
 6. **Sin secretos jamás** en `.ai/` (ni keys ni contraseñas).
 
+## 4.1 Compactación, evaluación y salud del PC
+
+- **`context-compact.mjs`**: mueve `.ai/sessions/` >90d y `.ai/operations/` >180d a
+  `.ai/archive/`; `.ai/knowledge/` >180d solo se reporta (nunca se borra sin `supersedes`).
+  Dry-run por defecto; `--apply` solo mueve sessions/operations.
+- **`context-eval.mjs`**: eval sin LLM con casos reales; mide hit@3/hit@7 de `search_docs` y
+  presencia del doc/lesson en `context_brief`. Si baja, es una regresión de ROUTER o ranking.
+- **`pc-audit.ps1` (Windows)**: RAM/CPU, antivirus, top procesos, puertos del stack, worktrees y
+  cachés; `-Clean` limpia Temp>7d y cachés de package managers sin matar procesos ni tocar
+  `node_modules`/Playwright.
+- **`prune-worktrees.ps1` (Windows)**: dry-run por defecto; solo poda worktrees **limpios y fusionados**
+  en la rama principal, archivando antes `.env`/`appsettings` fuera del workspace.
+
 ## 5. Plantilla global y anti-drift
 
-El tooling runtime (`broker.mjs`, `schema.sql`, `session-close.mjs`, `doc-health.mjs`) es
+El tooling runtime (`broker.mjs`, `schema.sql`, `session-close.mjs`, `doc-health.mjs`,
+`context-compact.mjs`, `context-eval.mjs`, `pc-audit.ps1`, `prune-worktrees.ps1`) es
 **copia runtime** de la plantilla canónica (`template/` de este repo; en tu máquina:
 `~/.config/opencode/templates/ai-workspace/`).
 
